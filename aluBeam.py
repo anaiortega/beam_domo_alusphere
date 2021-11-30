@@ -75,8 +75,9 @@ x_holes=[-hole_xdist/2,hole_xdist/2]
 y_holes=[hole_ydist_edge+i*hole_ydist_edge for i in range(nhole_yrows)]
 esize=20e-3
 angRadii=math.radians(45)
-
-F=2e3
+secArea=2*height*web_thck+2*flng_width*flng_thck
+Fmax=secArea*ftu_alu
+F=0.6*Fmax
 # **********End data and parameters ***************
 
 xLst=[-x_flange,-x_web,0,x_web,x_flange] ; xLst.sort()  
@@ -182,13 +183,18 @@ for blt in posBotFlangeBoltPnt:
 #meshSet.surfaces.append(posBotFlange)
 
 centBotFlangeSet=grid.getSetSurfOneXYZRegion(((-x_web,0,z_bottom_flange),(x_web,length,z_bottom_flange)),'centBotFlangeSet')
-
+'''
 ### Define material
-#flange_mat= tm.defElasticMembranePlateSection(preprocessor, "flange_mat",E=E_alu,nu=nu_alu,rho= dens_alu,h= flng_thck)
+flange_mat= tm.defElasticMembranePlateSection(preprocessor, "flange_mat",E=E_alu,nu=nu_alu,rho= dens_alu,h= flng_thck)
+'''
+
 # Materials for linear analysis vonmises verification
 aluminium=tm.defElasticIsotropic3d(preprocessor=prep, name='aluminium', E=E_alu, nu=nu_alu, rho=dens_alu)
-flange_mat=tm.DeckMaterialData(name='flange_mat',thickness= flng_thck,material=aluminium)
-flange_mat.setupElasticSection(preprocessor=prep)
+flange_mat=tm.defMembranePlateFiberSection(prep, name= 'flange_mat', h= 0.0, nDMaterial= aluminium)
+
+#flange_mat=tm.DeckMaterialData(name='flange_mat',thickness= flng_thck,material=aluminium)
+#flange_mat.setupElasticSection(preprocessor=prep)
+
 ### Define template element
 seedElemHandler= preprocessor.getElementHandler.seedElemHandler
 seedElemHandler.defaultMaterial= flange_mat.name
@@ -259,4 +265,43 @@ loadNodes=sets.get_set_nodes_plane_XZ(setName='loadNodes',setBusq=xcTotalSet,yCo
 nnodes=loadNodes.nodes.size
 Fnode=F/nnodes
 lstLoadNod=[n for n in loadNodes.nodes]
-nodalLoad
+nodalLoads=loads.NodalLoad('nodalLoads',lstLoadNod,xc.Vector([0,Fnode,0,0,0,0]))
+
+LC1=lcases.LoadCase(preprocessor=prep,name="LC1",loadPType="default",timeSType="constant_ts")
+LC1.create()
+LC1.addLstLoads([nodalLoads])
+
+modelSpace.removeAllLoadPatternsFromDomain()
+modelSpace.addLoadCaseToDomain('LC1')
+out.displayLoads()
+#result= modelSpace.analyze(calculateNodalReactions= True)
+#out.displayDispRot('uY')
+
+
+#******
+loadCaseNames=['LC1']
+combContainer= combs.CombContainer()
+for ULSnm in loadCaseNames:
+    combContainer.ULS.perm.add(str(ULSnm),'1.0*'+str(ULSnm))
+combContainer.dumpCombinations(preprocessor)
+
+setCalc=modelSpace.setSum('setCalc',lstSurfSets)
+
+
+cfg= default_config.EnvConfig(language='en', resultsPath= 'tmp_results/', intForcPath= 'internalForces/',verifPath= 'verifications/',reportPath='./',reportResultsPath= 'annex/',grWidth='120mm')
+cfg.projectDirTree.workingDirectory='./'
+lsd.LimitStateData.envConfig= cfg
+### Set combinations to compute.
+loadCombinations= preprocessor.getLoadHandler.getLoadCombinations
+
+limitState= lsd.vonMisesStressResistance
+limitState.vonMisesStressId= 'avg_von_mises_stress'
+limitStates= [limitState]
+### Compute internal forces for each combination
+for ls in limitStates:
+   ls.saveAll(combContainer,setCalc)
+ ### Check material resistance.
+outCfg= lsd.VerifOutVars(setCalc=setCalc, appendToResFile='N', listFile='N', calcMeanCF='Y')
+
+outCfg.controller= aisc.VonMisesStressController(limitState.label)
+average= limitState.runChecking(outCfg)
